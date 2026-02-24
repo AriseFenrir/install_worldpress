@@ -1,0 +1,169 @@
+#SPDX-License-Identifier: MIT-0
+---
+
+  - name: update apt cache for debian/ubuntu
+    apt:
+      update_cache: yes
+    when: ansible_facts['os_family'] == "Debian"
+  
+  - name: update dnf cache for RHEL/Rocky Linux
+    dnf:
+      update_cache: yes
+    when: ansible_facts['os_family'] == "RedHat"
+  
+  - name: install packages for debian/ubuntu
+    apt:
+      name: "{{ item }}"
+      state: present
+    loop:
+      "{{ var_packages_debian }}"
+    when: ansible_facts['os_family'] == "Debian"
+  
+  - name: install packages for RHEL/Rocky Linux
+    dnf:
+      name: "{{ item }}"
+      state: present
+    loop:
+      "{{ var_packages_redhat }}"
+    when: ansible_facts['os_family'] == "RedHat"
+  
+  - name: Delete default apache page for debian/ubuntu
+    file:
+      path: /var/www/html/index.html
+      state: absent
+    when: ansible_facts['os_family'] == "Debian"
+  
+  - name: Delete default httpd page for RHEL/Rocky Linux 
+    file:
+      path: /var/www/html/index.html
+      state: absent
+    when: ansible_facts['os_family'] == "RedHat"
+  
+  - name: start apache2 for debian/ubuntu
+    command: service apache2 start
+    when: ansible_facts['os_family'] == "Debian"
+  
+  - name: start httpd for RHEL/Rocky Linux
+    command: /usr/sbin/httpd -DFOREGROUND
+    when: ansible_facts['os_family'] == "RedHat"
+  
+  - name: start mariadb
+    command: mysqld_safe --datadir=/var/lib/mysql &
+  
+  - name: wait 10 seconds
+    pause:
+      seconds: 10
+  
+  - name: secure mariadb 
+    command: >
+      mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'examplerootPW';"
+      && mysql -uroot -pexamplerootPW -e "DELETE FROM mysql.user WHERE User='';"
+      && mysql -uroot -pexamplerootPW -e "DROP DATABASE IF EXISTS test;"
+      && mysql -uroot -pexamplerootPW -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';"
+      && mysql -uroot -pexamplerootPW -e "FLUSH PRIVILEGES;"
+  
+  - name: create wordpress database
+    command: >
+      mysql -uroot -pexamplerootPW -e "CREATE DATABASE wordpress;"
+      mysql -uroot -pexamplerootPW -e "CREATE USER 'example@localhost' IDENTIFIED BY 'examplePW';"
+      mysql -uroot -pexamplerootPW -e "GRANT ALL PRIVILEGES ON wordpress.* TO 'example@localhost';"
+      mysql -uroot -pexamplerootPW -e "FLUSH PRIVILEGES;"
+  
+  - name: download wordpress  unzip and move to /var/www/html with www-data and 755 permissions
+    block:
+      - name: Download WordPress
+        get_url:
+          url: https://wordpress.org/latest.zip
+          dest: /tmp/wordpress.zip
+      - name: Unzip WordPress
+        unarchive:
+          src: /tmp/wordpress.zip
+          dest: /tmp/
+          remote_src: yes
+      - name: Move WordPress to /var/www/html
+        command: mv /tmp/wordpress/* /var/www/html/
+      - name: Set permissions for /var/www/html
+        file:
+          path: /var/www/html
+          state: directory
+          mode: '0755'
+          owner: www-data
+          group: www-data
+
+  - name: create wp-config.php
+    block:
+      - name: Copy wp-config-sample.php to wp-config.php
+        copy:
+          src: /var/www/html/wp-config-sample.php
+          dest: /var/www/html/wp-config.php
+          remote_src: yes
+      - name: Update wp-config.php with database credentials
+        lineinfile:
+          path: /var/www/html/wp-config.php
+          regexp: '^define.*DB_NAME.*'
+          line: "define('DB_NAME', 'wordpress');"
+      - name: Update wp-config.php with database user
+        lineinfile:
+          path: /var/www/html/wp-config.php
+          regexp: '^define.*DB_USER.*'
+          line: "define('DB_USER', 'example');"
+      - name: Update wp-config.php with database password
+        lineinfile:
+          path: /var/www/html/wp-config.php
+          regexp: '^define.*DB_PASSWORD.*'
+          line: "define('DB_PASSWORD', 'examplePW');"
+      - name: Update wp-config.php with database host
+        lineinfile:
+          path: /var/www/html/wp-config.php
+          regexp: '^define.*DB_HOST.*'
+          line: "define('DB_HOST', 'localhost');"
+      - name: Set permissions for wp-config.php
+        file:
+          path: /var/www/html/wp-config.php
+          mode: '0644'
+          owner: www-data
+          group: www-data
+  
+  - name: configuration apache2 for wordpress on debian/ubuntu
+    block:
+      - name: Create apache configuration for wordpress
+        copy:
+          dest: /etc/apache2/sites-available/wordpress.conf
+          content: |
+            <VirtualHost *:80>
+                ServerAdmin admin@localhost
+                DocumentRoot /var/www/html/wordpress
+                <Directory /var/www/html/wordpress>
+                    AllowOverride All
+                </Directory>
+                ErrorLog ${APACHE_LOG_DIR}/error.log
+                CustomLog ${APACHE_LOG_DIR}/access.log combined
+            </VirtualHost>
+      - name: Enable wordpress site
+        command: a2ensite wordpress.conf
+      - name: Enable apache rewrite module
+        command: a2enmod rewrite
+      - name: Restart apache2
+        command: service apache2 restart
+    when: ansible_facts['os_family'] == "Debian"
+  
+  - name: configuration httpd for wordpress on RHEL/Rocky Linux
+    block:
+      - name: Create httpd configuration for wordpress
+        copy:
+          dest: /etc/httpd/conf.d/wordpress.conf
+          content: |
+            <VirtualHost *:80>
+                ServerAdmin admin@localhost
+                DocumentRoot /var/www/html/wordpress
+                <Directory /var/www/html/wordpress>
+                    AllowOverride All
+                </Directory>
+                ErrorLog /var/log/httpd/error.log
+                CustomLog /var/log/httpd/access.log combined
+            </VirtualHost>
+      - name: Enable httpd rewrite module
+        command: echo "LoadModule rewrite_module modules/mod_rewrite.so" >> /etc/httpd/conf.modules.d/00-base.conf
+      - name: Restart httpd
+        command: systemctl restart httpd
+    when: ansible_facts['os_family'] == "RedHat"
